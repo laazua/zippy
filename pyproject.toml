@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zippy"
+version = "2025.05.28"
+dependencies = []
+readme = "README.md"
+[project.urls]
+Repository = "https://github.com/laazua/zippy.git"
+[project.scripts]
+zippy = "main:main"
+
+[tool.setuptools]
+platforms = ["linux"]
