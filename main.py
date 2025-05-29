@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pack.py：把项目源码和 pip 安装的依赖打包成 .pyz。
+zippy：把项目源码和 pip 安装的依赖打包成 .pyz。
 依赖列表从项目根目录下的 requirements.txt 自动读取并在构建时安装到临时目录，
 将这些依赖连同源码一起打包。
 运行时自动解压到指定目录，并设置 PYTHONPATH 环境变量指向解压后的 deps 目录和项目根目录，
