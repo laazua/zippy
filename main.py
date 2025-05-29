@@ -1,125 +1,155 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-zippy - 支持自动打包并从内存加载 .so/.pyd 
-通过 -m 参数指定入口模块，运行时使用自定义导入钩子(memfd+dlopen 或 磁盘回退)在内存加载动态库。
+pack.py：把项目源码和 pip 安装的依赖打包成 .pyz。
+依赖列表从项目根目录下的 requirements.txt 自动读取并在构建时安装到临时目录，
+将这些依赖连同源码一起打包。
+运行时自动解压到指定目录，并设置 PYTHONPATH 环境变量指向解压后的 deps 目录和项目根目录，
+以子进程方式执行入口脚本，在等待期间响应中断信号，执行结束后删除解压目录。
+可通过 --entry 指定入口脚本（无需 __main__.py）。
+打包后生成的 .pyz 文件为可执行 zipapp。
+"""
 
-用法:
-  zippy <src_dir> -o <output.pyz> -m <entry_module>
-示例:
-  zippy myproj -o myapp.pyz -m app_pkg.main
-  chmod +x myapp.pyz
-  ./myapp.pyz arg1 arg2
-"""
 import os
 import sys
 import zipfile
-import tempfile
-import shutil
-import stat
 import argparse
 import subprocess
+import tempfile
+import shutil
 
+# Bootstrap 模板，写入 __main__.py
+BOOTSTRAP_TEMPLATE = '''#!/usr/bin/env python3
+"""
+自解压启动脚本：
+1. 解压 zip 到指定目录
+2. 设置 PYTHONPATH 环境变量包含 deps 子目录和项目根目录
+3. 以子进程方式运行入口脚本，带原始命令行参数
+4. 等待子进程结束或中断后清理解压目录
+"""
+import os, sys, zipfile, tempfile, shutil, subprocess, signal
 
-# 引导脚本模板：注册内存加载 .so/.pyd 的导入钩子，并在失败时回退到磁盘
-STUB = r'''#!/usr/bin/env python3
-import sys, os, zipfile, tempfile
-import importlib.abc, importlib.util, importlib.machinery
+ENTRY = '{ENTRY_SCRIPT}'
+# 获取归档路径和基目录
+archive = os.path.abspath(sys.argv[0])
+base_dir = os.path.dirname(archive)
+# 切换工作目录
+os.chdir(base_dir)
+EXTRACT_DIR = os.environ.get('MYAPP_EXTRACT_DIR') or tempfile.mkdtemp(prefix='zippy_app_')
+DEPS_DIR = os.path.join(EXTRACT_DIR, 'deps')
 
-# 打开 .pyz 包
-archive = sys.argv[0]
-zf = zipfile.ZipFile(archive)
+# 解压
+archive = os.path.abspath(sys.argv[0])
+with zipfile.ZipFile(archive, 'r') as zf:
+    zf.extractall(EXTRACT_DIR)
 
-class ZipExtLoader(importlib.abc.Loader):
-    def __init__(self, fullname, zpath):
-        self.fullname = fullname
-        self.zpath = zpath
-    def create_module(self, spec):
-        return None
-    def exec_module(self, module):
-        data = zf.read(self.zpath)
-        try:
-            # 在内存创建匿名文件
-            fd = os.memfd_create(self.fullname, flags=os.MFD_CLOEXEC)
-            os.write(fd, data)
-            os.lseek(fd, 0, os.SEEK_SET)
-            path = f"/proc/self/fd/{{fd}}"
-        except (AttributeError, OSError):
-            # 回退：写磁盘临时文件
-            tempdir = tempfile.gettempdir()
-            fn = os.path.join(tempdir, os.path.basename(self.zpath))
-            with open(fn, 'wb') as f:
-                f.write(data)
-            path = fn
-        # 加载扩展模块
-        loader = importlib.machinery.ExtensionFileLoader(self.fullname, path)
-        spec = importlib.util.spec_from_loader(self.fullname, loader)
-        mod = importlib.util.module_from_spec(spec)
-        loader.exec_module(mod)
-        sys.modules[self.fullname] = mod
+# 设置 PYTHONPATH
+orig = os.environ.get('PYTHONPATH', '')
+paths = [DEPS_DIR, EXTRACT_DIR]
+if orig:
+    paths.append(orig)
+os.environ['PYTHONPATH'] = os.pathsep.join(paths)
 
-class MetaImporter(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path, target=None):
-        name = fullname.replace('.', '/')
-        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-            zpath = name + suffix
-            if zpath in zf.namelist():
-                loader = ZipExtLoader(fullname, zpath)
-                return importlib.util.spec_from_loader(fullname, loader)
-        return None
+# 构建入口路径
+entry_path = os.path.join(EXTRACT_DIR, ENTRY)
+if not os.path.isfile(entry_path):
+    sys.exit(f"ERROR: 找不到入口脚本: {ENTRY}")
 
-# 注册导入钩子和 sys.path
-sys.meta_path.insert(0, MetaImporter())
-sys.path.insert(0, archive)
+# 清理解压目录
+def cleanup():
+    try:
+        shutil.rmtree(EXTRACT_DIR)
+    except Exception:
+        pass
 
-# 执行入口模块
-import runpy
-runpy.run_module('{entry_module}', run_name='__main__')
+# 捕获信号，转发给子进程
+child = None
+
+def _signal_handler(sig, frame):
+    if child:
+        child.send_signal(sig)
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
+
+# 启动子进程并等待
+try:
+    child = subprocess.Popen([sys.executable, entry_path] + sys.argv[1:], env=os.environ)
+    ret = child.wait()
+except KeyboardInterrupt:
+    # 中断时杀掉子进程
+    try:
+        child.kill()
+    except:
+        pass
+    ret = 1
+finally:
+    cleanup()
+
+sys.exit(ret)
 '''
 
-def install_deps(req_file, target_dir):
-    subprocess.check_call([
-        sys.executable, '-m', 'pip', 'install',
-        '--upgrade', '-r', req_file,
-        '-t', target_dir
-    ])
 
-def build(src, output, module):
-    # 准备临时目录
-    work = tempfile.mkdtemp(prefix='zippy_build_')
-    # 复制源码及依赖
-    shutil.copytree(src, work, dirs_exist_ok=True)
-    req = os.path.join(src, 'requirements.txt')
-    if os.path.isfile(req):
-        print(f"Installing dependencies from {req}...")
-        install_deps(req, work)
-    # 写入 __main__.py
-    with open(os.path.join(work, '__main__.py'), 'w') as f:
-        f.write(STUB.format(entry_module=module))
-    # 打包为 .pyz
-    with open(output, 'wb') as f:
-        f.write(b'#!/usr/bin/env python3\n')
-    with zipfile.ZipFile(output, 'a', zipfile.ZIP_DEFLATED) as zf_out:
-        for root, _, files in os.walk(work):
-            for fn in files:
-                path = os.path.join(root, fn)
-                arc = os.path.relpath(path, work)
-                zf_out.write(path, arc)
-    # 设置可执行权限
-    os.chmod(output, os.stat(output).st_mode | stat.S_IEXEC)
-    # 清理临时目录
-    shutil.rmtree(work)
-    print(f"✅ 构建完成 {output}, 入口：{module}")
+def collect_project(zf, project_dir):
+    for root, dirs, files in os.walk(project_dir):
+        for fn in files:
+            if fn.endswith(('.py', '.html', '.txt')) or fn == 'requirements.txt':
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, project_dir)
+                zf.write(full, rel)
+
+
+def collect_deps(zf, deps_tmp):
+    for root, dirs, files in os.walk(deps_tmp):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, deps_tmp)
+            zf.write(full, os.path.join('deps', rel))
+
+
+def build(project_dir, output, entry):
+    deps_temp = tempfile.mkdtemp(prefix='deps_')
+    try:
+        req = os.path.join(project_dir, 'requirements.txt')
+        if not os.path.isfile(req):
+            print(f"ERROR: 找不到 requirements.txt: {req}")
+            sys.exit(1)
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install',
+            '--target', deps_temp, '-r', req
+        ])
+
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp.close()
+        with zipfile.ZipFile(tmp.name, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('__main__.py', BOOTSTRAP_TEMPLATE.replace('{ENTRY_SCRIPT}', entry))
+            collect_project(zf, project_dir)
+            collect_deps(zf, deps_temp)
+
+        if os.path.exists(output):
+            os.remove(output)
+        with open(output, 'wb') as outf, open(tmp.name, 'rb') as inf:
+            outf.write(b'#!/usr/bin/env python3\n')
+            shutil.copyfileobj(inf, outf)
+        os.chmod(output, 0o755)
+        print(f"打包完成: {output}")
+    finally:
+        shutil.rmtree(deps_temp)
+        os.remove(tmp.name)
+
 
 def main():
-    parser = argparse.ArgumentParser(prog='zippy')
-    parser.add_argument('src', help='源码目录')
-    parser.add_argument('-o', '--output', required=True, help='输出 .pyz 文件')
-    parser.add_argument('-m', '--module', required=True, help='入口模块，如 app_pkg.main')
-    args = parser.parse_args()
-    if args.src == "" or args.output == "" or args.module == "":
-        parser.print_usage()
-    else:
-        build(args.src, args.output, args.module)
+    p = argparse.ArgumentParser(description='打包 Python 项目为 .pyz')
+    p.add_argument('-p', '--project', required=True, help='项目根目录')
+    p.add_argument('-o', '--output', required=True, help='.pyz 输出路径')
+    p.add_argument('-e', '--entry', required=True, help='入口脚本，相对项目根')
+    args = p.parse_args()
+    proj = os.path.abspath(args.project)
+    ent = os.path.join(proj, args.entry)
+    if not os.path.isfile(ent):
+        print(f"ERROR: 找不到入口脚本: {ent}")
+        sys.exit(1)
+    build(proj, os.path.abspath(args.output), args.entry)
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
     main()

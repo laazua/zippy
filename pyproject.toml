@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zippy"
-version = "2025.05.28"
+version = "2025.05.29"
 dependencies = []
 readme = "README.md"
 [project.urls]

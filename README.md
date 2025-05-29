@@ -1,9 +1,8 @@
 ### zippy
 
 - 说明
-1. 打包Python项目及其依赖为单个 .pyz 结尾的压缩文件
-2. 可以通过Python解释器直接调用该压缩文件运行, 即: python example.pyz
-3. 注意打包使用的的Python解释器和运行的Python解释器版本要一致
+1. 将Python项目及其依赖打包为单个.pyz文件
+2. 运行是使用Pythonj解释器直接调用.pyz文件，即: python example.pyz
 
 - 示例
 ```
@@ -16,10 +15,10 @@ example/
 └── requirements.txt
 
 # 打包
-zippy example/ -o example.pyz -m main
-```
+zippy -p example/ -o example.pyz -e main.py
 
-- 注意
-1. 在安装时指定的Python版本：python3.11 -m pip install zippy-2025.5.28.tar.gz  
-   这里的python3.11要与后面运行打包文件example.pyz指定的Python解释器一致: python3.11 example.pyz  
-2. 将zippy-2025.5.28.tar.gz安装到系统环境中: python3.11 -m pip install zippy-2025.5.28.tar.gz --break-system-packages
+# 运行打包文件
+# 设置: export MYAPP_EXTRACT_DIR=./.zippy, 环境变量,默认为: /tmp
+# 注意: 设置MYAPP_EXTRACT_DIR时, 不要设置为: ./
+python example.pyz
+```
