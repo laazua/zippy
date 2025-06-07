@@ -94,7 +94,7 @@ def collect_project(zf, project_dir):
         # 忽略 .venv 目录
         dirs[:] = [d for d in dirs if d != '.venv']
         for fn in files:
-            if fn.endswith(('.py', '.html', '.txt')) or fn == 'requirements.txt':
+            if fn.endswith(('.py', '.html', '.txt', '.css')) or fn == 'requirements.txt':
                 full = os.path.join(root, fn)
                 rel = os.path.relpath(full, project_dir)
                 zf.write(full, rel)
