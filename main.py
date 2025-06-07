@@ -19,14 +19,13 @@ import tempfile
 import shutil
 
 # Bootstrap 模板，写入 __main__.py
-BOOTSTRAP_TEMPLATE = '''#!/usr/bin/env python3
-"""
-自解压启动脚本：
-1. 解压 zip 到指定目录
-2. 设置 PYTHONPATH 环境变量包含 deps 子目录和项目根目录
-3. 以子进程方式运行入口脚本，带原始命令行参数
-4. 等待子进程结束或中断后清理解压目录
-"""
+BOOTSTRAP_TEMPLATE = """#!/usr/bin/env python3
+#自解压启动脚本：
+#1. 解压 zip 到指定目录
+#2. 设置 PYTHONPATH 环境变量包含 deps 子目录和项目根目录
+#3. 以子进程方式运行入口脚本，带原始命令行参数
+#4. 等待子进程结束或中断后清理解压目录
+
 import os, sys, zipfile, tempfile, shutil, subprocess, signal
 
 ENTRY = '{ENTRY_SCRIPT}'
@@ -86,18 +85,19 @@ finally:
     cleanup()
 
 sys.exit(ret)
-'''
+"""
 
 
 def collect_project(zf, project_dir):
+    # fns = ('.py', '.html', '.txt', '.css', '.png', '.gif')
     for root, dirs, files in os.walk(project_dir):
         # 忽略 .venv 目录
         dirs[:] = [d for d in dirs if d != '.venv']
         for fn in files:
-            if fn.endswith(('.py', '.html', '.txt', '.css')) or fn == 'requirements.txt':
-                full = os.path.join(root, fn)
-                rel = os.path.relpath(full, project_dir)
-                zf.write(full, rel)
+            # if fn.endswith(fns):
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, project_dir)
+            zf.write(full, rel)
 
 
 def collect_deps(zf, deps_tmp):
